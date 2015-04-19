@@ -1,0 +1,123 @@
+/**
+ *	PlantLink
+ *
+ *	Author: SmartThings
+ *	Date: 2013-12-17
+ *
+ *	Modified by d8adrvn
+ *  Fixed incompatibilities between device type and the plant link devices shipped to me
+ *  Added the ability to manually set range using preferences section and see actual readout using value tile
+ *  ToDo: Create auto-ranging capability by storing max and min (>1000) value observed.  Create auto-config reset tile to reset stored values and start again
+ *  ToDo: Create a "Water Sensor" capability to broadcast message when the binary state of wet or dry has been achieved
+ */ 
+
+
+
+metadata {
+
+	// Automatically generated. Make future change here.
+	definition (name: "Plant Link rev1.1", namespace: "smartthings", author: "SmartThings") {
+		capability "Relative Humidity Measurement"
+		capability "Battery"
+		capability "Sensor"
+
+		fingerprint profileId: "0104", inClusters: "0000,0003,0B04,FC08", outClusters: "0003"  //d8adrvn:changed 0405 to 0B04
+	}
+    
+     // for the UI
+	preferences {
+    	input("dryValue", "number", title: "Enter reading observed for dry soil.  This will be used to calculate a Plant Fuel Level of 0%", description: "Dry Value Reading", required: true, defaultValue: "8000",displayDuringSetup: true)
+    	input("wetValue", "number", title: "Enter reading observed for well watered soil.  This will be used to calculate a Plant Fuel Level of 100%", description: "Wet Value Reading", required: true, defaultValue: "12000",displayDuringSetup: true)
+	}
+
+
+
+	tiles {
+		valueTile("humidity", "device.humidity", width: 2, height: 2) {
+			state("humidity", label:'${currentValue}%', unit:"",
+				backgroundColors:[
+					[value: 31, color: "#153591"],
+					[value: 44, color: "#1e9cbb"],
+					[value: 59, color: "#90d2a7"],
+					[value: 74, color: "#44b621"],
+					[value: 84, color: "#f1d801"],
+					[value: 95, color: "#d04e00"],
+					[value: 96, color: "#bc2323"]
+				]
+			)
+		}
+		valueTile("battery", "device.battery") {
+			state "battery", label:'${currentValue}%', unit:""
+		}
+        
+        valueTile ("message", "device.message", width: 3, height: 1) {
+        state "message", label:'${currentValue}', unit:""
+		}
+        
+
+		main(["humidity"])
+		details(["humidity", "battery", "message"])
+	}
+}
+
+// Parse incoming device messages to generate events
+def parse(String description) {
+	log.debug "Parse description $description"
+	def map = [:]
+    def intValue = 0
+	if (description?.startsWith("read attr -")) {
+		def descMap = parseDescriptionAsMap(description)
+      	if ((descMap.cluster == "0B04" && descMap.attrId == "0100") || (descMap.cluster == "0405" && descMap.attrId == "0000")) {     //d8adrvn:changed 0405->0B04, 0000->0100
+			intValue = (Integer.parseInt(descMap.value, 16)) 
+            log.debug "Humidity"
+          	map.name = "humidity"
+			map.value = calculateHumidity(intValue)
+		} 
+        else if (descMap.cluster == "0001" && descMap.attrId == "0000") {
+			log.debug "Battery"
+			map.name = "battery"
+			map.value = calculateBattery(descMap.value)
+		}
+	}
+
+	def result = null
+	if (map) {
+		result = createEvent(map)
+	}
+    def messageResult = null
+    if (intValue !=0) {
+   		messageResult = createEvent (name:"message", value:"$intValue", displayed: true, isStateChange: true, isPhysical: true)  //provide user with readings to manually calibrate
+    }
+	log.debug "Parse returned $map || $messageResult"
+	return [result, messageResult]
+}
+
+def parseDescriptionAsMap(description) {
+	(description - "read attr - ").split(",").inject([:]) { map, param ->
+		def nameAndValue = param.split(":")
+		map += [(nameAndValue[0].trim()):nameAndValue[1].trim()]
+	}
+}
+
+private calculateHumidity(intValue) {		
+    def intWetValue = wetValue.toInteger()
+    def intDryValue = dryValue.toInteger()
+	def percent =(intValue - intDryValue) / (intWetValue-intDryValue) * 100
+//    log.debug "calculated percent = $percent"
+	// Make sure our percentage is between 0 - 100
+    percent = Math.max(0.0, Math.min(percent, 100.0))
+	return percent
+}
+
+private calculateBattery(value) {
+	def min = 2300
+	def percent = (Integer.parseInt(value, 16) - min) / 10
+	// Make sure our percentage is between 0 - 100
+	percent = Math.max(0.0, Math.min(percent, 100.0))
+	return percent
+}
+
+private hex(value) {
+	new BigInteger(Math.round(value).toString()).toString(16)
+}
+
